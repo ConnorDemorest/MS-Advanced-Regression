@@ -1,0 +1,242 @@
+---
+title: "Project3"
+author: "Connor Demorest"
+date: "4/13/2021"
+output: 
+  pdf_document
+---
+```{r, echo = F, message = F, warning = F, include = F}
+library(knitr)
+library(tidyverse)
+library(rstanarm)
+library(readxl)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+```
+#### Introduction & Data Overview
+
+The data come from (Busca et al, 2020) originally investigating "the acute responses on the muscular activity of primary movers during the execution of a half-squat under different unstable devices". For this project, I modeled that explains how the amount of acceleration differs between different lunge types as a function of vastus medialis contraction while controlling for the repeated measures design of the experiment. 
+
+Ten athletes performed 4 different types of lunges - 3 replications each of a suspended lunge with their foot on the ground, a soft foam pad, a Bosu ball face up, and a Bosu ball face down (see figure in appendix for an illustration). A variety of measurements were recorded for each movement, of which the acceleration, amount of vastus medialis contraction, the type of lunge, and some subject information like height, weight, and age were recorded. 
+
+```{r, message = F, echo = F}
+subject_data <- read_xlsx('lunges.xlsx', sheet = "Sample" ) %>% slice(1:10) %>% 
+  mutate(subject = 1:n()) %>% select(-...1, -Sport, -`Leg dominance`,-`Hours of training`)
+
+write_csv(subject_data, path = 'subject_data.csv')
+
+lunge_data <- read_xlsx('lunges.xlsx', sheet = "Correlation_ACCEL_Force" )  %>% slice(1:30) %>%
+  mutate(subject = rep(1:10, each = 3),
+         replicate = rep(1:3, 10)) %>%
+  mutate(Lunge = as.numeric(`Suspended_Lunge_Accel`),
+         Lunge_Bosu_up = as.numeric(`Suspended Lunge_Bosu_up_Accel`),
+         Lunge_Bosu_down = as.numeric(`Suspended Lunge_Bosu_down_Accel`),
+         Lunge_Foam = as.numeric(`Suspended Lunge_Foam_Accel`)) %>% 
+    select(subject, replicate, Lunge, Lunge_Bosu_up, Lunge_Bosu_down, Lunge_Foam) %>%
+  pivot_longer(-c(subject,replicate))
+
+muscle_data <- read_xlsx('muscle.xlsx')
+
+data_out <- lunge_data %>% left_join(muscle_data) %>% rename(acceleration = value, lunge_type = name)
+write_csv(data_out, path = 'lunge_final.csv')
+
+subject_data <- read_csv('subject_data.csv')
+lunge_final <- read_csv('lunge_final.csv') %>% 
+  mutate(subject = as.factor(subject), 
+         muscle = (muscle - mean(muscle)/sd(muscle)),
+         lunge_type2 = factor(lunge_type, labels = c("Ground", "Bosu Down", "Bosu Up", "Foam")))
+```
+
+Figure 1 shows the amount of acceleration for each lunge type, with an overall mean and the mean for each subject. There is a lot of variability within each lunge type, but within each subject for each lunge type, there is a lot less variability. That suggests that a model that would account for the repeated measures design of the experiment would be a much more accurate model compared to a model that did not take that into account. 
+
+```{r}
+ggplot() + 
+  geom_jitter(
+    data = lunge_final, 
+    mapping = aes(x = lunge_type2, y = acceleration, col = subject), 
+  width = 0.2,
+  size = 0.5) + 
+  geom_point(
+    data = lunge_final %>% 
+         group_by(subject, lunge_type2) %>% 
+         summarise(sub_acceleration = mean(acceleration)), 
+    mapping = aes(x = lunge_type2, y = sub_acceleration, col = subject),
+    shape = 5,
+    size = 4) +
+  geom_point(
+    data = lunge_final %>% 
+           group_by(lunge_type2) %>% 
+           summarise(lunge_acceleration = mean(acceleration)),
+    mapping = aes(x = lunge_type2, y = lunge_acceleration), 
+    color = "black", 
+    size = 6, 
+    shape = 3) +
+  geom_hline(yintercept = mean(lunge_final$acceleration)) + 
+  labs(x = "Lunge Type", 
+       y = "Acceleration",
+       color = "Subject",
+       title = "Figure 1: Lunge acceleration for each subject by lunge type",
+       subtitle = "Mean acceleration for each lunge type at the subject level, lunge type level, and overall",
+       caption = "Subjects 2 and 4 have very high acceleration and 8 has very low acceleration \nfor all lunge types compared to average")
+```
+
+
+#### Statistical Procedures:
+These data should be modeled with a multilevel model, since there are 3 observations on the same test subject for each type of lunge. To properly model these data, we should take advantage of that fact and model a different effect for each combination of lunge type and subject when accounting for the amount of vastus medialis activation. There could be a different effect for different lunge types on vastus medialis contraction; in fact, I would very surprised if there isn't. It makes a lot of sense (to me) that the amount of contraction on quadriceps muscle would change based on the type of movement being performed. To account for that possible different effect between the two predictors, there should be an interaction term in the model. 
+
+The final model should therefore be (from Gelman & Hill, 2006): 
+
+![](latex_code.png)
+```{r,echo = F, warning = F, message = F}
+set.seed(4162021)
+model = stan_glmer(formula = acceleration ~ lunge_type * muscle + (1 + lunge_type * muscle | subject), 
+                   data = lunge_final, 
+                   adapt_delta = 0.999,
+                   refresh = 0)
+
+df = data.frame(fixef = fixef(model),
+                ses = model$ses[1:8],
+                CI = paste0("(", round(fixef(model) - 2*model$ses[1:8], 2),", ", round(fixef(model) + 2*model$ses[1:8], 2), ")"))
+
+table1 = kable(df, digits = 2, caption = "Fixed effects of fitted model with SE estimates")
+table1
+```
+
+This model allows for the estimate for the intercept and slope to be different for each subject, for each of the lunge types, and a different slope for each lunge type based on the muscle contraction amount. The model uses the default prior, which are weakly informative priors which are used to help with computation (Goodrich & Gabry, 2020). 
+
+A better model would also incorporate the subject data that has height, weight, and age information for each subject. In that case, we could better estimate the acceleration on a new subject if we know those three characteristics about them if they're similar to those that were sampled. 
+
+#### Results & Discussion:
+
+The fixed effects from the model are summarized in Table 1. For all subjects, there is a 95% chance that the overall mean acceleration is between around 0.21 and 0.70 after controlling for muscle contraction and lunge type for the typical subject that has average muscle activation while doing the lunge with their foot on the ground. The effect of more muscle contraction for the lift with the foot on the ground has no effect on the amount of acceleration (change in acceleration: 0.00, 95% CI: {-0.09, 0.09}).
+
+Compared to the lunge with their foot on the ground, the acceleration increased slightly for lunges with the Bosu ball facing up (change in acceleration: 0.21, 95% CI: {-0.08, 0.56}) and with Bosu facing down (change in acceleration: 0.00, 95% CI: {-0.09, 0.09}) for subjects that had an average amount of muscle activation, and decreased slightly on a soft pad (change in acceleration: 0.00, 95% CI: {-0.09, 0.09}). If a subject had more than average activation of the vastus medialis muscle, all of those trends were exaggerated. In this model, the unexplained within-subject variation has an estimated standard deviation $\sigma_y^2$ of 0.017. That would suggest that a lot of variation is explained by the model compared to the amount of subject to subject and within subject variability. 
+
+#### Appendix
+
+_Figures:_
+```{r, fig.align='center', fig.height= 2, fig.width=2, echo = F}
+knitr::include_graphics(path = "lunges.pdf")
+```
+
+_Papers:_
+
+Buscà, B., Aguilera-Castells, J., Arboix-Alió, J., Miró, A., Fort-Vanmeerhaeghe, A., & Peña, J. (2020). Influence of the Amount of Instability on the Leg Muscle Activity During a Loaded Free Barbell Half-Squat. International journal of environmental research and public health, 17(21), 8046. https://doi.org/10.3390/ijerph17218046
+
+Gelman, A., & Hill, J. (2006). Data Analysis Using Regression and Multilevel/Hierarchical Models (Analytical Methods for Social Research). Cambridge: Cambridge University Press. doi:10.1017/CBO9780511790942
+
+Jonah, G., &amp; Ben, G. (2020, July 20). Prior distributions for rstanarm models. Retrieved April 17, 2021, from http://mc-stan.org/rstanarm/articles/priors.html
+
+_R packages:_
+
+ Wickham et al., (2019). Welcome
+  to the tidyverse. Journal of Open
+  Source Software, 4(43), 1686,
+  https://doi.org/10.21105/joss.01686
+
+Goodrich B, Gabry J, Ali I &
+  Brilleman S. (2020). rstanarm:
+  Bayesian applied regression
+  modeling via Stan. R package
+  version 2.21.1
+  https://mc-stan.org/rstanarm.
+  
+Yihui Xie (2020). knitr: A
+  General-Purpose Package for
+  Dynamic Report Generation in R. R
+  package version 1.30.
+
+Yihui Xie (2015) Dynamic
+  Documents with R and knitr. 2nd
+  edition. Chapman and Hall/CRC.
+  ISBN 978-1498716963
+
+Yihui Xie (2014) knitr: A
+  Comprehensive Tool for
+  Reproducible Research in R. In
+  Victoria Stodden, Friedrich
+  Leisch and Roger D. Peng,
+  editors, Implementing
+  Reproducible Computational
+  Research. Chapman and Hall/CRC.
+  ISBN 978-1466561595
+  
+Hadley Wickham and Jennifer Bryan
+  (2019). readxl: Read Excel Files.
+  R package version 1.3.1.
+  https://CRAN.R-project.org/package=readxl
+
+```{r, eval = F, echo = T}
+library(knitr)
+library(tidyverse)
+library(rstanarm)
+library(readxl)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+
+subject_data <- read_xlsx('lunges.xlsx', sheet = "Sample" ) %>% slice(1:10) %>% 
+  mutate(subject = 1:n()) %>% select(-...1, -Sport, -`Leg dominance`,-`Hours of training`)
+
+write_csv(subject_data, path = 'subject_data.csv')
+
+lunge_data <- read_xlsx('lunges.xlsx', sheet = "Correlation_ACCEL_Force" )  %>% slice(1:30) %>%
+  mutate(subject = rep(1:10, each = 3),
+         replicate = rep(1:3, 10)) %>%
+  mutate(Lunge = as.numeric(`Suspended_Lunge_Accel`),
+         Lunge_Bosu_up = as.numeric(`Suspended Lunge_Bosu_up_Accel`),
+         Lunge_Bosu_down = as.numeric(`Suspended Lunge_Bosu_down_Accel`),
+         Lunge_Foam = as.numeric(`Suspended Lunge_Foam_Accel`)) %>% 
+    select(subject, replicate, Lunge, Lunge_Bosu_up, Lunge_Bosu_down, Lunge_Foam) %>%
+  pivot_longer(-c(subject,replicate))
+
+muscle_data <- read_xlsx('muscle.xlsx')
+
+data_out <- lunge_data %>% left_join(muscle_data) %>% rename(acceleration = value, lunge_type = name)
+write_csv(data_out, path = 'lunge_final.csv')
+
+subject_data <- read_csv('subject_data.csv')
+lunge_final <- read_csv('lunge_final.csv') %>% 
+  mutate(subject = as.factor(subject), 
+         muscle = (muscle - mean(muscle)/sd(muscle)),
+         lunge_type2 = factor(lunge_type, labels = c("Ground", "Bosu Down", "Bosu Up", "Foam")))
+
+ggplot() + 
+  geom_jitter(
+    data = lunge_final, 
+    mapping = aes(x = lunge_type2, y = acceleration, col = subject), 
+  width = 0.2,
+  size = 0.5) + 
+  geom_point(
+    data = lunge_final %>% 
+         group_by(subject, lunge_type2) %>% 
+         summarise(sub_acceleration = mean(acceleration)), 
+    mapping = aes(x = lunge_type2, y = sub_acceleration, col = subject),
+    shape = 5,
+    size = 4) +
+  geom_point(
+    data = lunge_final %>% 
+           group_by(lunge_type2) %>% 
+           summarise(lunge_acceleration = mean(acceleration)),
+    mapping = aes(x = lunge_type2, y = lunge_acceleration), 
+    color = "black", 
+    size = 6, 
+    shape = 3) +
+  geom_hline(yintercept = mean(lunge_final$acceleration)) + 
+  labs(x = "Lunge Type", 
+       y = "Acceleration",
+       color = "Subject",
+       title = "Figure 1: Lunge acceleration for each subject by lunge type",
+       subtitle = "Mean acceleration for each lunge type at the subject level, lunge type level, and overall",
+       caption = "Subjects 2 and 4 have very high acceleration and 8 has very low acceleration \nfor all lunge types compared to average")
+
+set.seed(4162021)
+model = stan_glmer(formula = acceleration ~ lunge_type * muscle + (1 + lunge_type * muscle | subject), 
+                   data = lunge_final, 
+                   adapt_delta = 0.999,
+                   refresh = 0)
+
+df = data.frame(fixef = fixef(model),
+                ses = model$ses[1:8],
+                CI = paste0("(", round(fixef(model) - 2*model$ses[1:8], 2),", ", round(fixef(model) + 2*model$ses[1:8], 2), ")"))
+
+table1 = kable(df, digits = 2, caption = "Fixed effects of fitted model with SE estimates")
+```
+
