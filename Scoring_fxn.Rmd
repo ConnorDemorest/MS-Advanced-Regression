@@ -1,0 +1,29 @@
+---
+title: "Scoring function"
+author: "Connor Demorest"
+date: "3/14/2021"
+output: html_document
+---
+Score function: 
+Teams will be scored using conventional Straight Scoring plus Seed Point Difference.
+First Round=1 point per game, Second Round=2, Sweet Sixteen=4, Elite Eight=8, Final Four =16, Championship=32.
+If the underdog wins then the seed difference between the two teams is added.
+
+```{r}
+# Seed1 is seed of predicted winner
+# Seed2 is seed of pred loser
+# Round is round of the tournament the game is played
+# pred_winner is 1 if winner correctly predicted, 0 else
+sample = data.frame(s1 = c(1,3,5), s2 = c(1, 1, 12), rd = c(1,1,3), pred_winner = c(0, 1, 1))
+
+Scoring = function(seed1, seed2, round, is_winner) {
+  seed_diff = ifelse(test = seed1 - seed2 > 0, yes = seed1 - seed2, no = 0)
+  # If we correctly predict the winner, the score is the 1 pt for first round, 2 for second, etc
+  # Plus if seed diff is positive, we add the seed diff
+  score = (2^(round-1) + seed_diff) * is_winner
+  return(score)
+}
+# For each row in the predictions data frame, get the score and take the sum to get a final score
+mapply(Scoring, seed1 = sample$s1, seed2 = sample$s2, round = sample$rd, is_winner = sample$pred_winner)
+```
+

@@ -1,0 +1,72 @@
+---
+title: "model fitting"
+author: "Therese Lupariello"
+date: "3/17/2021"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(forcats)
+library(randomForest)
+library(rpart)
+library(caret)
+```
+
+```{r}
+bball <- read_csv("bbtraindata.csv") %>% 
+  select(-c(Season, TeamIdA, TeamIdB, SeedA, SeedB, ScoreA, ScoreB, Round, A.team, B.team, A.conference, B.conference, A.record, B.record, Score_diff)) %>% 
+  mutate(WinA = as.factor(WinA))
+```
+
+#make training and test datasets
+```{r}
+num_basketball <- nrow(bball)
+basketball_train_ids <- sample(1:num_basketball, round(num_basketball * .80))
+basketball_test_ids <- (1:num_basketball)[!(1:num_basketball) %in% basketball_train_ids]
+basketball_train <- bball %>% slice(basketball_train_ids)
+basketball_test <- bball %>% slice(basketball_test_ids)
+```
+
+```{r}
+# 10-fold cross validation
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "random", allowParallel = T)
+# Train model
+rf_random <- train(form = WinA ~ ., data = basketball_train, method = "rf", tuneLength = 15, trControl = control)
+# Which value of mtry should be best? 
+print(rf_random)
+plot(rf_random)
+# predictive accuracy on hold-out data
+a = predict(rf_random, newdata = basketball_test, type = "prob")[,2]
+b = as.factor(mapply(rbinom, 1, 1, a))
+confusionMatrix(data = b, reference = basketball_test$WinA)
+
+# Variable importance
+tree_pred1 <- randomForest(WinA ~ ., data = basketball_train, mtry = 12)
+varImpPlot(tree_pred1)
+plot(varImp(rf_random))
+
+# More predictive accuracy
+basketball_test$preds = predict(tree_pred1, newdata = basketball_test, type = "prob")[,2]
+basketball_test$vals = as.factor(mapply(rbinom, 1, 1, basketball_test$preds))
+
+confusionMatrix(reference = basketball_test$WinA, data = basketball_test$vals)
+
+# Top 5 predictors are best by far
+tree_pred_final <- randomForest(WinA ~ adj_em_diff + W_diff + Rank_diff + L_diff + Seed_diff, data = bball)
+
+# Final modeling, gonna turn this in
+pred_data$final_pred = predict(tree_pred_final, newdata = pred_data, type = "prob")[,2]
+pred_data$modeled_val = mapply(rbinom, 1, 1, pred_data$final_pred)
+
+# Modeling probability that A wins, so a 1 is predicting that team A wins in the tourney
+pred_data %>% 
+  select(A.team, B.team, seed_1, seed_2, modeled_val, final_pred, teamid_1, teamid_2) %>%
+  View
+```
+
+
+
+
+
+
